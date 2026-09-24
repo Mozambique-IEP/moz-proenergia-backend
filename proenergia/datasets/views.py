@@ -13,6 +13,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .aggregation import CombinedFieldAggregator, FilterParser
+from .cache_utils import invalidate_scenario_summary_cache, summary_cache_key
 from .filters import (
     DataModelFilter,
     RasterDatasetFilter,
@@ -256,7 +257,9 @@ class MultiFieldSummaryView(APIView):
 
     def get(self, request, pk):
         # Generate cache key from request parameters
-        cache_key = f"summaries:{pk}:{hashlib.md5(request.GET.urlencode().encode()).hexdigest()}"
+        cache_key = summary_cache_key(
+            pk, hashlib.md5(request.GET.urlencode().encode()).hexdigest()
+        )
 
         # Try to get from cache
         cached_response = cache.get(cache_key)
@@ -423,21 +426,14 @@ class PurgeSummaryCacheView(APIView):
 
     def delete(self, request, pk):
         """Clear all cache entries for the specified scenario."""
-        # Validate scenario exists
-        scenario = get_object_or_404(Scenario, id=pk)
-
-        # Since we can't easily get all keys with a pattern in Django's cache,
-        # we'll need to track cache keys separately or clear specific known patterns
-        # For now, we'll return a success message indicating cache clear request
-
-        # Note: In production, you might want to track cache keys in a set
-        # or use a more sophisticated cache backend that supports pattern deletion
+        get_object_or_404(Scenario, id=pk)
+        deleted_count = invalidate_scenario_summary_cache(pk)
 
         return Response(
             {
                 "status": "success",
-                "message": f"Cache purge requested for scenario {pk}",
-                "note": "Cache entries will be invalidated on next request",
+                "message": f"Cache purged for scenario {pk}",
+                "deleted": deleted_count,
             },
             status=status.HTTP_200_OK,
         )

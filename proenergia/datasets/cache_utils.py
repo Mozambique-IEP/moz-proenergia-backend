@@ -2,11 +2,11 @@
 Cache utilities for managing scenario summary cache invalidation.
 
 This module provides functions to invalidate cached summary responses
-when scenario data is updated.
+when scenario data or its data model is updated.
 """
 
 import logging
-from typing import List
+from typing import Iterable
 
 from django.conf import settings
 from django.core.cache import cache
@@ -14,55 +14,44 @@ from django.db import connection
 
 logger = logging.getLogger(__name__)
 
+SUMMARY_CACHE_PREFIX = "summaries:"
 
-def get_scenario_summary_cache_keys(scenario_id: int) -> List[str]:
+
+def summary_cache_key(scenario_id: int, query_hash: str) -> str:
+    """Build the cache key used for a scenario summaries response."""
+    return f"{SUMMARY_CACHE_PREFIX}{scenario_id}:{query_hash}"
+
+
+def _delete_keys_with_prefix(prefix: str) -> int:
     """
-    Get all cache keys for summary queries of a given scenario.
+    Delete all cache entries whose key starts with the given (unversioned) prefix.
 
-    This uses a workaround since Django's database cache backend
-    doesn't support pattern-based deletion.
-
-    The approach queries the cache table directly for all keys matching
-    the pattern 'summaries:{scenario_id}:*'
-
-    Args:
-        scenario_id: The scenario ID to find cache keys for
+    Django's database cache backend doesn't support pattern-based deletion,
+    so we delete directly from the cache table. The prefix is passed through
+    cache.make_key() so it matches the stored key format
+    (e.g. ':1:summaries:5:...' with the default KEY_PREFIX and VERSION).
 
     Returns:
-        List of cache keys that match the scenario's summary pattern
+        Number of cache entries deleted
     """
-    cache_location = settings.CACHES["default"]["LOCATION"]
-    prefix = f"summaries:{scenario_id}:"
+    cache_table = connection.ops.quote_name(settings.CACHES["default"]["LOCATION"])
+    stored_prefix = cache.make_key(prefix)
+    # Escape LIKE wildcards so the prefix is matched literally
+    like_prefix = (
+        stored_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
 
-    try:
-        # Query the cache table directly for matching keys
-        # The key column in Django's database cache is typically 'cache_key'
-        with connection.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT cache_key FROM {cache_location}
-                WHERE cache_key LIKE %s
-                """,
-                [f"{prefix}%"],
-            )
-            rows = cursor.fetchall()
-            return [row[0] for row in rows]
-    except Exception as e:
-        logger.warning(
-            f"Failed to query cache keys for scenario {scenario_id}: {e}. "
-            "Falling back to blind deletion."
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"DELETE FROM {cache_table} WHERE cache_key LIKE %s",
+            [f"{like_prefix}%"],
         )
-        # If direct query fails, return empty list
-        # The calling function will use cache.clear() as fallback
-        return []
+        return cursor.rowcount
 
 
 def invalidate_scenario_summary_cache(scenario_id: int) -> int:
     """
     Invalidate all cached summary responses for a specific scenario.
-
-    This clears all cache entries matching the pattern 'summaries:{scenario_id}:*',
-    forcing fresh computation on the next request.
 
     Args:
         scenario_id: The scenario ID for which to invalidate cache
@@ -70,10 +59,7 @@ def invalidate_scenario_summary_cache(scenario_id: int) -> int:
     Returns:
         Number of cache entries deleted
     """
-    cache_keys = get_scenario_summary_cache_keys(scenario_id)
-
-    deleted_count = len(cache_keys)
-    cache.delete_many(cache_keys)
+    deleted_count = _delete_keys_with_prefix(f"{SUMMARY_CACHE_PREFIX}{scenario_id}:")
 
     if deleted_count > 0:
         logger.info(
@@ -82,4 +68,30 @@ def invalidate_scenario_summary_cache(scenario_id: int) -> int:
     else:
         logger.debug(f"No cache entries found to invalidate for scenario {scenario_id}")
 
+    return deleted_count
+
+
+def invalidate_scenarios_summary_cache(scenario_ids: Iterable[int]) -> int:
+    """
+    Invalidate cached summary responses for several scenarios.
+
+    Returns:
+        Total number of cache entries deleted
+    """
+    return sum(
+        invalidate_scenario_summary_cache(scenario_id) for scenario_id in scenario_ids
+    )
+
+
+def invalidate_all_summary_cache() -> int:
+    """
+    Invalidate cached summary responses for all scenarios.
+
+    Only summary entries are removed; other cache entries are left untouched.
+
+    Returns:
+        Number of cache entries deleted
+    """
+    deleted_count = _delete_keys_with_prefix(SUMMARY_CACHE_PREFIX)
+    logger.info(f"Invalidated {deleted_count} summary cache entries for all scenarios")
     return deleted_count
