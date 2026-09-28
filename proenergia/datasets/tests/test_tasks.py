@@ -101,10 +101,11 @@ class TestScenarioFilePostSaveTasks(TestCase):
         self.assertTrue("location" in merged_gdf.columns)
         self.assertFalse("country" in merged_gdf.columns)
 
-    @patch("proenergia.datasets.tasks.import_scenario_data_csv.delay")
     @patch("proenergia.datasets.tasks.generate_pmtiles.delay")
     @patch("proenergia.datasets.tasks.generate_scenario_pmtiles.delay")
-    def test_generate_scenario_pmtiles(self, mock_scenario, mock_2, mock_importer):
+    def test_generate_scenario_pmtiles(
+        self, mock_generate_scenario_pmtiles, mock_generate_pmtiles
+    ):
         self.superadmin = get_user_model().objects.create_superuser(
             username="superadmin", email="admin@example.com", password="testpass123"
         )
@@ -160,8 +161,8 @@ class TestScenarioFilePostSaveTasks(TestCase):
             created_by=self.superadmin,
             status="ready",
         )
-        mock_scenario.assert_called_with(self.scenario_file_1.id)
-        mock_importer.assert_called_with(self.scenario_file_1.id)
+        mock_generate_pmtiles.assert_called_with(self.vector_file_1.id)
+        mock_generate_scenario_pmtiles.assert_called_with(self.scenario_file_1.id)
 
         # import csv and check ScenarioData items were created
         import_scenario_data_csv(self.scenario_file_1.id)
@@ -189,8 +190,8 @@ class TestScenarioFilePostSaveTasks(TestCase):
             status="ready",
         )
 
-        mock_scenario.assert_called_with(self.scenario_file_2.id)
-        mock_importer.assert_called_with(self.scenario_file_2.id)
+        mock_generate_pmtiles.assert_called_with(self.vector_file_1.id)
+        mock_generate_scenario_pmtiles.assert_called_with(self.scenario_file_2.id)
 
         import_scenario_data_csv(self.scenario_file_2.id)
         self.assertEqual(
@@ -221,3 +222,61 @@ class TestScenarioFilePostSaveTasks(TestCase):
             ).count(),
             0,
         )
+
+
+class TestImportScenarioDataCsvCacheInvalidation(TestCase):
+    """Verify that cache invalidation is triggered after a successful CSV import."""
+
+    def setUp(self):
+        self.scenario_csv = "./proenergia/datasets/fixtures/scenario.csv"
+        superadmin = get_user_model().objects.create_superuser(
+            username="superadmin", email="admin@example.com", password="testpass123"
+        )
+        dataset = VectorDataset.objects.create(
+            name="Boundaries",
+            description="Administrative Boundaries",
+            source="OSM",
+            is_public=True,
+            is_approved=True,
+            created_by=superadmin,
+            last_updated_by=superadmin,
+        )
+        file = SimpleUploadedFile(
+            "v.geojson", b"file_content", content_type="application/json"
+        )
+        VectorFile.objects.create(
+            dataset=dataset,
+            file=file,
+            created_by=superadmin,
+            status="ready",
+        )
+        model = DataModel.objects.create(
+            name="Test Model",
+            filter_fields=[{"label": "Location", "column": "location"}],
+            popup_fields=[{"label": "Location", "column": "location"}],
+        )
+        self.scenario = Scenario.objects.create(
+            name="Test Scenario",
+            vector_dataset=dataset,
+            model=model,
+        )
+        self.superadmin = superadmin
+
+    @patch("proenergia.datasets.tasks.generate_pmtiles.delay")
+    @patch("proenergia.datasets.tasks.generate_scenario_pmtiles.delay")
+    @patch("proenergia.datasets.tasks.invalidate_scenario_summary_cache")
+    def test_cache_invalidated_after_successful_import(
+        self, mock_invalidate, mock_scenario_pmtiles, mock_pmtiles
+    ):
+        with open(self.scenario_csv, "rb") as f:
+            content = f.read()
+        scenario_file = ScenarioFile.objects.create(
+            scenario=self.scenario,
+            file=SimpleUploadedFile("scenario.csv", content, content_type="text/csv"),
+            created_by=self.superadmin,
+            status="ready",
+        )
+
+        import_scenario_data_csv(scenario_file.id)
+
+        mock_invalidate.assert_called_once_with(self.scenario.id)

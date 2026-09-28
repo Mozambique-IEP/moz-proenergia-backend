@@ -53,6 +53,8 @@ class TestDataModelViews(APITestCase):
         )
         self.model_1 = DataModel.objects.create(
             name="PUE",
+            description="Productive Use of Electricity",
+            is_public=True,
             filter_fields=[
                 {
                     "label": "Population",
@@ -78,6 +80,8 @@ class TestDataModelViews(APITestCase):
                 }
             ],
             visualization_column="Pop",
+            visualization_column_description="Population in 2025",
+            visualization_column_description_pt="População em 2025",
             color_coding=[
                 {"value": 1000, "color": "#ddd"},
                 {"value": 10000, "color": "#ff00dd"},
@@ -85,6 +89,30 @@ class TestDataModelViews(APITestCase):
         )
         self.model_2 = DataModel.objects.create(
             name="Clean Cooking",
+            is_public=True,
+            filter_fields=[
+                {
+                    "label": "Population",
+                    "description": "Population in 2025",
+                    "column": "Pop",
+                },
+                {
+                    "label": "State",
+                    "description": "State name",
+                    "column": "State",
+                },
+            ],
+            popup_fields=[
+                {
+                    "label": "Population",
+                    "description": "Population in 2025",
+                    "column": "Pop",
+                }
+            ],
+        )
+        self.model_private = DataModel.objects.create(
+            name="New Private Model",
+            is_public=False,
             filter_fields=[
                 {
                     "label": "Population",
@@ -141,6 +169,17 @@ class TestDataModelViews(APITestCase):
         assert req.status_code == status.HTTP_200_OK
         assert req.data.get("count") == 2
         assert req.data.get("results")[0]["name"] == "PUE"
+        assert (
+            req.data.get("results")[0]["description"] == "Productive Use of Electricity"
+        )
+        assert (
+            req.data.get("results")[0]["visualization_column_description"]
+            == "Population in 2025"
+        )
+        assert (
+            req.data.get("results")[0]["visualization_column_description_pt"]
+            == "População em 2025"
+        )
         assert req.data.get("results")[1]["name"] == "Clean Cooking"
         assert (
             req.data.get("results")[0]["scenarios"][0]["name"]
@@ -152,6 +191,22 @@ class TestDataModelViews(APITestCase):
         )
         assert req.data.get("results")[1]["scenarios"][0]["model_file"].startswith(
             "scenarios/clean-cooking-1_v1"
+        )
+        assert (
+            req.data.get("results")[0]["scenarios"][0]["vector_dataset"]["id"]
+            == self.dataset_1.id
+        )
+        assert (
+            req.data.get("results")[0]["scenarios"][0]["vector_dataset"]["name"]
+            == self.dataset_1.name
+        )
+        assert (
+            req.data.get("results")[1]["scenarios"][0]["vector_dataset"]["id"]
+            == self.dataset_2.id
+        )
+        assert (
+            req.data.get("results")[1]["scenarios"][0]["vector_dataset"]["name"]
+            == self.dataset_2.name
         )
         assert req.data.get("results")[0]["filter_fields"] == [
             {
@@ -199,6 +254,18 @@ class TestDataModelViews(APITestCase):
         ]
         assert req.data.get("results")[0]["updated"]
 
+    def test_model_list_admin_user(self):
+        self.client.force_authenticate(user=self.admin_user)
+        req = self.client.get(self.url)
+        assert req.status_code == status.HTTP_200_OK
+        assert req.data.get("count") == 3
+
+    def test_model_list_superadmin(self):
+        self.client.force_authenticate(user=self.superadmin_user)
+        req = self.client.get(self.url)
+        assert req.status_code == status.HTTP_200_OK
+        assert req.data.get("count") == 3
+
     @patch("proenergia.datasets.tasks.generate_scenario_pmtiles.delay")
     def test_model_detail(self, mock_task):
         url = reverse("datasets:model-detail", args=[self.model_1.id])
@@ -240,6 +307,38 @@ class TestDataModelViews(APITestCase):
             req.data["scenarios"][0]["model_file"] == "scenarios/clean-cooking-1_v2.csv"
         )
         assert req.data.get("updated")
+
+        # model_private is not accessible by anonymous users
+        url = reverse("datasets:model-detail", args=[self.model_private.id])
+        req = self.client.get(url)
+        assert req.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_model_detail_admin_user(self):
+        # model_private is accessible by admin users
+        self.client.force_authenticate(user=self.admin_user)
+        url = reverse("datasets:model-detail", args=[self.model_private.id])
+        req = self.client.get(url)
+        assert req.status_code == status.HTTP_200_OK
+
+        # model 2 is accessible by admin users
+        url = reverse("datasets:model-detail", args=[self.model_2.id])
+        req = self.client.get(url)
+        assert req.status_code == status.HTTP_200_OK
+        assert req.data.get("name") == "Clean Cooking"
+
+    def test_model_detail_superuser(self):
+        # all models are accessible by superadmin users
+        self.client.force_authenticate(user=self.superadmin_user)
+        url = reverse("datasets:model-detail", args=[self.model_private.id])
+        req = self.client.get(url)
+        assert req.status_code == status.HTTP_200_OK
+        assert req.data.get("name") == "New Private Model"
+
+        # model 2 is accessible by admin users
+        url = reverse("datasets:model-detail", args=[self.model_1.id])
+        req = self.client.get(url)
+        assert req.status_code == status.HTTP_200_OK
+        assert req.data.get("name") == "PUE"
 
     def tearDown(self):
         ScenarioFile.objects.all().delete()

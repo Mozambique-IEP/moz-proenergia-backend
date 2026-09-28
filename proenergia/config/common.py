@@ -3,12 +3,16 @@ from os.path import join
 
 import dj_database_url
 from configurations import Configuration
+from django.urls import reverse_lazy
+from django.utils.translation import gettext_lazy as _
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class Common(Configuration):
     INSTALLED_APPS = (
+        # modeltranslation must come before unfold and django.contrib.admin
+        "modeltranslation",
         # unfold
         "unfold",  # before django.contrib.admin
         "unfold.contrib.filters",  # optional, if special filters are needed
@@ -32,6 +36,7 @@ class Common(Configuration):
         "django_filters",  # for filtering rest endpoints
         "drf_spectacular",  # api-docs
         "corsheaders",
+        "django_json_widget",
         # Celery apps
         "django_celery_results",
         "django_celery_beat",
@@ -44,6 +49,7 @@ class Common(Configuration):
     MIDDLEWARE = (
         "django.middleware.security.SecurityMiddleware",
         "django.contrib.sessions.middleware.SessionMiddleware",
+        "django.middleware.locale.LocaleMiddleware",
         "corsheaders.middleware.CorsMiddleware",
         "django.middleware.common.CommonMiddleware",
         "django.middleware.csrf.CsrfViewMiddleware",
@@ -57,8 +63,22 @@ class Common(Configuration):
     SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
     WSGI_APPLICATION = "proenergia.wsgi.application"
 
-    # Email
-    EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+    # Email Configuration - Read from environment variables
+    EMAIL_BACKEND = os.getenv(
+        "EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend"
+    )
+    EMAIL_HOST = os.getenv("EMAIL_HOST", "localhost")
+    EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))  # Default to TLS port
+    EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+    EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+    EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True").lower() in [
+        "true",
+        "1",
+        "yes",
+    ]  # Default to TLS enabled
+    EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "False").lower() in ["true", "1", "yes"]
+    DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@proenergia.mz")
+    SERVER_EMAIL = os.getenv("SERVER_EMAIL", DEFAULT_FROM_EMAIL)
 
     ADMINS = (("Author", "info@developmentseed.org"),)
 
@@ -72,14 +92,32 @@ class Common(Configuration):
         )
     }
 
+    # Cache Configuration
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+            "LOCATION": "summaries_cache_table",
+            "TIMEOUT": 86400,  # 24 hours default
+            "OPTIONS": {
+                "MAX_ENTRIES": 10000,
+                "CULL_FREQUENCY": 4,  # Delete 1/4 of entries when MAX_ENTRIES is reached
+            },
+        }
+    }
+
     # General
     APPEND_SLASH = False
     TIME_ZONE = "UTC"
-    LANGUAGE_CODE = "en-us"
-    # If you set this to False, Django will make some optimizations so as not
-    # to load the internationalization machinery.
-    USE_I18N = False
+    LANGUAGE_CODE = "en"
+    USE_I18N = True
     USE_L10N = True
+    LANGUAGES = (
+        ("en", "English"),
+        ("pt", "Portuguese"),
+    )
+    MODELTRANSLATION_DEFAULT_LANGUAGE = "en"
+    MODELTRANSLATION_PREPOPULATE_LANGUAGE = "en"
+    LOCALE_PATHS = (join(BASE_DIR, "locale"),)
     USE_TZ = True
     LOGIN_REDIRECT_URL = "/"
 
@@ -214,16 +252,113 @@ class Common(Configuration):
     }
     # API Docs
     SPECTACULAR_SETTINGS = {
-        "TITLE": "Mozambique PROENERGIA+ API Docs",
-        "DESCRIPTION": "Mozambique PROENERGIA+ API Documentation",
+        "TITLE": "PIEM - API Docs",
+        "DESCRIPTION": "Plataforma Integrada de Electrificação de Moçambique (PIEM) - API Documentation",
         "VERSION": "1.0.0",
         "SERVE_INCLUDE_SCHEMA": False,
     }
     # Django Unfold
     UNFOLD = {
-        "SITE_TITLE": "Mozambique PROENERGIA+",
-        "SITE_HEADER": "Mozambique PROENERGIA+",
-        "SITE_SUBHEADER": "Administration Interface",
+        "SITE_TITLE": "Plataforma Integrada de Electrificação de Moçambique - PIEM",
+        "SITE_HEADER": "PIEM - SDI",
+        "SITE_SUBHEADER": _("Administration Interface"),
+        "SHOW_LANGUAGES": True,
+        "EXTENSIONS": {
+            "modeltranslation": {
+                "flags": {
+                    "en": "🇬🇧",
+                    "pt": "🇲🇿",
+                },
+            },
+        },
+        "SIDEBAR": {
+            "navigation": [
+                {
+                    "title": _("Models"),
+                    "items": [
+                        {
+                            "title": _("Data Models"),
+                            "icon": "modeling",
+                            "link": reverse_lazy("admin:datasets_datamodel_changelist"),
+                        },
+                        {
+                            "title": _("Scenarios"),
+                            "icon": "graph_1",
+                            "link": reverse_lazy("admin:datasets_scenario_changelist"),
+                        },
+                        {
+                            "title": _("Scenario Files"),
+                            "icon": "csv",
+                            "link": reverse_lazy(
+                                "admin:datasets_scenariofile_changelist"
+                            ),
+                        },
+                    ],
+                },
+                {
+                    "title": _("Datasets"),
+                    "items": [
+                        {
+                            "title": _("Vector Datasets"),
+                            "icon": "map",
+                            "link": reverse_lazy(
+                                "admin:datasets_vectordataset_changelist"
+                            ),
+                        },
+                        {
+                            "title": _("Vector Files"),
+                            "icon": "file_map_stack",
+                            "link": reverse_lazy(
+                                "admin:datasets_vectorfile_changelist"
+                            ),
+                        },
+                        {
+                            "title": _("Raster Datasets"),
+                            "icon": "globe_asia",
+                            "link": reverse_lazy(
+                                "admin:datasets_rasterdataset_changelist"
+                            ),
+                        },
+                        {
+                            "title": _("Raster Files"),
+                            "icon": "photo_library",
+                            "link": reverse_lazy(
+                                "admin:datasets_rasterfile_changelist"
+                            ),
+                        },
+                        {
+                            "title": _("Reference Datasets"),
+                            "icon": "book_ribbon",
+                            "link": reverse_lazy(
+                                "admin:datasets_referencedataset_changelist"
+                            ),
+                        },
+                        {
+                            "title": _("Reference Files"),
+                            "icon": "collections_bookmark",
+                            "link": reverse_lazy(
+                                "admin:datasets_referencefile_changelist"
+                            ),
+                        },
+                    ],
+                },
+                {
+                    "title": _("Users & Groups"),
+                    "items": [
+                        {
+                            "title": _("Users"),
+                            "icon": "person",
+                            "link": reverse_lazy("admin:users_user_changelist"),
+                        },
+                        {
+                            "title": _("Groups"),
+                            "icon": "groups",
+                            "link": reverse_lazy("admin:auth_group_changelist"),
+                        },
+                    ],
+                },
+            ],
+        },
     }
 
     # Celery Configuration
@@ -244,3 +379,7 @@ class Common(Configuration):
 
     # CORS
     CORS_ALLOW_ALL_ORIGINS = True
+
+    # Frontend
+    BACKEND_URL = os.getenv("BACKEND_URL", "https://proenergia-staging.ds.io")
+    FRONTEND_URL = os.getenv("FRONTEND_URL", "https://proenergina.netlify.app")

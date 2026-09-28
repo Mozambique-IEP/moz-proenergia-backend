@@ -1,14 +1,20 @@
 from django.conf import settings
+from django.conf.urls import handler403
+from django.conf.urls.i18n import i18n_patterns
 from django.conf.urls.static import static
 from django.contrib import admin
-from django.urls import include, path, re_path, reverse_lazy
+from django.urls import include, path, re_path
 from django.views.generic.base import RedirectView
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
-from rest_framework.authtoken import views
 from rest_framework.routers import DefaultRouter
+
+from proenergia.datasets.views import error_403
+from proenergia.users.views import AuthTokenView
 
 router = DefaultRouter()
 API_BASE_URL = "api/v1"
+
+handler403 = error_403
 
 api_urls = [
     path(
@@ -25,11 +31,12 @@ api_urls = [
         f"{API_BASE_URL}/tasks/",
         include(("proenergia.tasks.urls", "proenergia.tasks"), namespace="tasks"),
     ),
-    path(f"{API_BASE_URL}/token-auth/", views.obtain_auth_token),
+    path(f"{API_BASE_URL}/token-auth/", AuthTokenView.as_view()),
 ]
 
 urlpatterns = [
-    path("admin/", admin.site.urls),
+    path("i18n/", include("django.conf.urls.i18n")),
+    *i18n_patterns(path("admin/", admin.site.urls)),
     path("", include(api_urls)),
     path("api-auth/", include("rest_framework.urls", namespace="rest_framework")),
     path(f"{API_BASE_URL}/schema/", SpectacularAPIView.as_view(), name="schema"),
@@ -40,7 +47,10 @@ urlpatterns = [
     ),
     # the 'api-root' from django rest-frameworks default router
     # http://www.django-rest-framework.org/api-guide/routers/#defaultrouter
-    re_path(r"^$", RedirectView.as_view(url=reverse_lazy("api-root"), permanent=False)),
+    re_path(
+        r"^$",
+        RedirectView.as_view(url=settings.FRONTEND_URL, permanent=False),
+    ),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
 # Debug Toolbar URLs (only in DEBUG mode)

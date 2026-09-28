@@ -27,7 +27,13 @@ pip install -r requirements.txt --upgrade
 echo "Running database migrations..."
 python manage.py migrate
 
+echo "Creating/updating cache table..."
+python manage.py createcachetable
+
 echo "Collecting static files..."
 python manage.py collectstatic --noinput
+
+echo "Compiling translation files..."
+python manage.py compilemessages -f
 
 echo "=== Application update complete ==="

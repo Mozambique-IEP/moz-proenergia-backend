@@ -1,3 +1,7 @@
+import hashlib
+
+from django.core.cache import cache
+from django.template.response import TemplateResponse
 from rest_framework import status
 from rest_framework.generics import ListAPIView, RetrieveAPIView, get_object_or_404
 from rest_framework.permissions import (
@@ -8,10 +12,18 @@ from rest_framework.permissions import (
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .aggregation import FilterParser, get_aggregator, CombinedFieldAggregator
-from .filters import VectorDatasetFilter
+from .aggregation import CombinedFieldAggregator, FilterParser
+from .cache_utils import invalidate_scenario_summary_cache, summary_cache_key
+from .filters import (
+    DataModelFilter,
+    RasterDatasetFilter,
+    ReferenceDatasetFilter,
+    VectorDatasetFilter,
+)
 from .models import (
     DataModel,
+    RasterDataset,
+    ReferenceDataset,
     Scenario,
     ScenarioData,
     ScenarioDataMetrics,
@@ -20,6 +32,8 @@ from .models import (
 from .pagination import StandardResultsSetPagination
 from .serializers import (
     DataModelSerializer,
+    RasterDatasetSerializer,
+    ReferenceDatasetSerializer,
     ScenarioDataSerializer,
     VectorDatasetSerializer,
 )
@@ -37,6 +51,16 @@ class PublicApprovedDataset(BasePermission):
             return True
         else:
             return request.method in SAFE_METHODS and obj.is_public and obj.is_approved
+
+
+class PublicModel(BasePermission):
+    """Limit access to private models to staff users."""
+
+    def has_object_permission(self, request, view, obj):
+        if request.user and request.user.is_staff:
+            return True
+        else:
+            return request.method in SAFE_METHODS and obj.is_public
 
 
 class VectorDatasetListView(ListAPIView):
@@ -65,12 +89,75 @@ class VectorDatasetDetailView(RetrieveAPIView):
     permission_classes = [PublicApprovedDataset]
 
 
-class DataModelListView(ListAPIView):
-    """Lists all available DataModel entries."""
+class RasterDatasetListView(ListAPIView):
+    """Lists RasterDatasets that are public and approved. For logged-in superadmin users, it returns all datasets."""
 
-    queryset = DataModel.objects.prefetch_related("scenarios")
+    serializer_class = RasterDatasetSerializer
+    permission_classes = [IsAuthenticatedOrReadOnly]
+    pagination_class = StandardResultsSetPagination
+    filterset_class = RasterDatasetFilter
+
+    def get_queryset(self):
+        queryset = RasterDataset.objects.select_related("created_by", "last_updated_by")
+        if self.request.user and self.request.user.is_superuser:
+            return queryset
+        elif self.request.user.is_authenticated:
+            return queryset.filter(is_approved=True)
+        else:
+            return queryset.filter(is_public=True, is_approved=True)
+
+
+class RasterDatasetDetailView(RetrieveAPIView):
+    """Returns information about a specific RasterDataset."""
+
+    queryset = RasterDataset.objects.all()
+    serializer_class = RasterDatasetSerializer
+    permission_classes = [PublicApprovedDataset]
+
+
+class ReferenceDatasetListView(ListAPIView):
+    """Lists ReferenceDatasets that are public and approved. For logged-in superadmin users, it returns all datasets."""
+
+    serializer_class = ReferenceDatasetSerializer
+    permission_classes = [IsAuthenticatedOrReadOnly]
+    pagination_class = StandardResultsSetPagination
+    filterset_class = ReferenceDatasetFilter
+
+    def get_queryset(self):
+        queryset = ReferenceDataset.objects.select_related(
+            "created_by", "last_updated_by"
+        )
+        if self.request.user and self.request.user.is_superuser:
+            return queryset
+        elif self.request.user.is_authenticated:
+            return queryset.filter(is_approved=True)
+        else:
+            return queryset.filter(is_public=True, is_approved=True)
+
+
+class ReferenceDatasetDetailView(RetrieveAPIView):
+    """Returns information about a specific ReferenceDataset."""
+
+    queryset = ReferenceDataset.objects.all()
+    serializer_class = ReferenceDatasetSerializer
+    permission_classes = [PublicApprovedDataset]
+
+
+class DataModelListView(ListAPIView):
+    """Lists all available DataModel entries. Non-staff users only see public models."""
+
     serializer_class = DataModelSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
+    filterset_class = DataModelFilter
+
+    def get_queryset(self):
+        queryset = DataModel.objects.prefetch_related(
+            "scenarios", "contextual_layers", "raster_layers", "reference_datasets"
+        )
+        if self.request.user and self.request.user.is_staff:
+            return queryset
+        else:
+            return queryset.filter(is_public=True)
 
 
 class DataModelDetailView(RetrieveAPIView):
@@ -78,7 +165,7 @@ class DataModelDetailView(RetrieveAPIView):
 
     queryset = DataModel.objects.all()
     serializer_class = DataModelSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [PublicModel]
 
 
 class ScenarioDataDetailView(RetrieveAPIView):
@@ -158,15 +245,30 @@ class MultiFieldSummaryView(APIView):
     ```
 
     ## Errors
-    - `400`: Missing/invalid fields, unsupported operators
-    - `404`: No data found for specified fields
+    - `400`: Missing `fields` parameter, invalid/non-string `group_by` fields, unsupported filter operators, more than 2 `group_by` fields
+    - `404`: No data found for `group_by` field
 
-    Fields must be configured in DataModel.metric_field_types. Use DataModel API to discover available fields.
+    ## Field Handling
+    Fields not configured in DataModel.metric_field_types or without data return `{"count": 0}` rather than an error.
+    Use DataModel API to discover available fields.
     """
 
     permission_classes = [IsAuthenticatedOrReadOnly]
 
     def get(self, request, pk):
+        # Generate cache key from request parameters
+        cache_key = summary_cache_key(
+            pk, hashlib.md5(request.GET.urlencode().encode()).hexdigest()
+        )
+
+        # Try to get from cache
+        cached_response = cache.get(cache_key)
+        if cached_response is not None:
+            # Add cache hit header
+            response = Response(cached_response)
+            response["X-Cache"] = "HIT"
+            return response
+
         # 1. Validate scenario exists
         scenario = get_object_or_404(Scenario, id=pk)
 
@@ -283,16 +385,22 @@ class MultiFieldSummaryView(APIView):
                 summaries[field] = {"count": 0}
 
         # 8. Return successful response
-        response = {
+        response_data = {
             "scenario_id": pk,
             "filters_applied": filter_params,
             "summaries": summaries,
         }
 
         if group_by_fields:
-            response["group_by"] = group_by_fields
+            response_data["group_by"] = group_by_fields
 
-        return Response(response)
+        # Cache the response before returning (24 hours by default)
+        cache.set(cache_key, response_data, timeout=86400)
+
+        # Add cache miss header
+        response = Response(response_data)
+        response["X-Cache"] = "MISS"
+        return response
 
     def _get_all_group_values(self, scenario, group_by_field):
         """Get all unique values for the group_by field in the scenario."""
@@ -302,3 +410,34 @@ class MultiFieldSummaryView(APIView):
             .distinct()
             .order_by("string_value")
         )
+
+
+class PurgeSummaryCacheView(APIView):
+    """
+    Purge cache entries for a specific scenario's summaries.
+
+    **URL:** `/api/v1/scenario/{pk}/summaries/cache/`
+
+    This endpoint clears all cached summary responses for a specific scenario,
+    forcing fresh computation on the next request.
+    """
+
+    permission_classes = [IsAuthenticatedOrReadOnly]
+
+    def delete(self, request, pk):
+        """Clear all cache entries for the specified scenario."""
+        get_object_or_404(Scenario, id=pk)
+        deleted_count = invalidate_scenario_summary_cache(pk)
+
+        return Response(
+            {
+                "status": "success",
+                "message": f"Cache purged for scenario {pk}",
+                "deleted": deleted_count,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+def error_403(request, exception):
+    return TemplateResponse(request, "admin/403.html", {})

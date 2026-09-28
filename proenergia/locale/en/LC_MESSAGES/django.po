@@ -1,0 +1,79 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the PACKAGE package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-04-08 11:19+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#: proenergia/config/common.py:264
+msgid "Administration Interface"
+msgstr ""
+
+#: proenergia/config/common.py:277
+msgid "Models"
+msgstr ""
+
+#: proenergia/config/common.py:280
+msgid "Data Models"
+msgstr ""
+
+#: proenergia/config/common.py:285
+msgid "Scenarios"
+msgstr ""
+
+#: proenergia/config/common.py:290
+msgid "Scenario Files"
+msgstr ""
+
+#: proenergia/config/common.py:299
+msgid "Datasets"
+msgstr ""
+
+#: proenergia/config/common.py:302
+msgid "Vector Datasets"
+msgstr ""
+
+#: proenergia/config/common.py:309
+msgid "Vector Files"
+msgstr ""
+
+#: proenergia/config/common.py:316
+msgid "Raster Datasets"
+msgstr ""
+
+#: proenergia/config/common.py:323
+msgid "Raster Files"
+msgstr ""
+
+#: proenergia/config/common.py:330
+msgid "Reference Datasets"
+msgstr ""
+
+#: proenergia/config/common.py:337
+msgid "Reference Files"
+msgstr ""
+
+#: proenergia/config/common.py:346
+msgid "Users & Groups"
+msgstr ""
+
+#: proenergia/config/common.py:349
+msgid "Users"
+msgstr ""
+
+#: proenergia/config/common.py:354
+msgid "Groups"
+msgstr ""

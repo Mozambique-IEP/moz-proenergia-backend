@@ -3,6 +3,7 @@ import json
 import logging
 import subprocess
 import time
+from os import remove
 from os.path import basename, dirname, join, splitext
 from typing import Dict, Iterator, List
 
@@ -12,18 +13,22 @@ from celery import shared_task
 from django.apps import apps
 from django.db import connection, transaction
 
+from proenergia.datasets.cache_utils import invalidate_scenario_summary_cache
 from proenergia.datasets.utils import detect_csv_delimiter, get_file_variant
 
 logger = logging.getLogger(__name__)
 
 
-def call_tippecanoe(input_path: str, output_path: str):
+def call_tippecanoe(
+    input_path: str, output_path: str, min_zoom: int = 5, max_zoom: int | None = None
+):
     subprocess.run(
         [
             "tippecanoe",
-            "-Z5",
-            "-z14",
-            "-zg",
+            f"-Z{min_zoom}",
+            f"-z{max_zoom}" if max_zoom else "-zg",
+            "-pk",
+            "-pf",
             "--projection=EPSG:4326",
             "-o",
             output_path,
@@ -36,6 +41,22 @@ def call_tippecanoe(input_path: str, output_path: str):
         capture_output=True,
         text=True,
     )
+
+
+def join_pmtiles(low_zoom_path: str, high_zoom_path: str, output_path: str):
+    subprocess.run(
+        ["tile-join", "-o", output_path, low_zoom_path, high_zoom_path, "-f"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def create_centroid_geom_file(input_file: str, output_file: str):
+    """Create a geospatial file with the centroid geometries of the input file."""
+    gdf = gpd.read_file(input_file)
+    gdf.geometry = gdf.centroid
+    gdf.to_file(output_file)
 
 
 def to_pmtiles(file_path: str):
@@ -104,7 +125,13 @@ def merge_vector_scenario_files(
     The resulting file will be a FlatGeobuf.
     """
     vector = gpd.read_file(vector_file_path)
+    # The FID is stored as the index when reading FlatGeobuf; reset it so
+    # "id" becomes a regular column that can be used as a merge key.
+    if "id" not in vector.columns:
+        vector = vector.reset_index().rename(columns={"index": "id"})
     delimiter = detect_csv_delimiter(scenario_file_path)
+
+    selected_columns = list(set(selected_columns + ["id"]))
 
     # Read CSV with robust error handling
     try:
@@ -112,18 +139,15 @@ def merge_vector_scenario_files(
             scenario_file_path,
             sep=delimiter,
             encoding="utf-8",
+            usecols=selected_columns,  # Load only required columns upfront
             on_bad_lines="skip",  # Skip malformed lines instead of failing
             engine="python",  # More flexible parser
         )
     except Exception as e:
         logger.error(f"Failed to read CSV file {scenario_file_path}: {e}")
-        raise
+        raise e
 
-    # append id and remove duplicated columns
-    selected_columns = list(set(selected_columns + ["id"]))
-    vector.merge(model_data[selected_columns], on="id").to_file(
-        merged_file_path, driver="FlatGeobuf"
-    )
+    vector.merge(model_data, on="id").to_file(merged_file_path, driver="FlatGeobuf")
     logger.info(f"Merged file created on {merged_file_path}.")
 
 
@@ -159,18 +183,38 @@ def generate_scenario_pmtiles(self, id: int):
         columns = [i.get("column") for i in model.filter_fields]
         if model.visualization_column and model.visualization_column not in columns:
             columns.append(model.visualization_column)
+
         merge_vector_scenario_files(
             get_file_variant(vf.file.path, "fgb"),
             sf.file.path,
             columns,
             fgb_path,
         )
-        call_tippecanoe(fgb_path, get_file_variant(sf.file.path, "pmtiles"))
+        pmtiles_final_path = get_file_variant(sf.file.path, "pmtiles")
 
-        sf.status = "ready"
-        sf.save(update_fields=["status"])
+        # if low_zoom_as_points is selected, use centroid geometries for low zoom levels
+        if sf.low_zoom_as_points:
+            low_zoom_file = pmtiles_final_path.replace(".pmtiles", "_low_zoom.pmtiles")
+            high_zoom_file = pmtiles_final_path.replace(
+                ".pmtiles", "_high_zoom.pmtiles"
+            )
+            centroid_file = fgb_path.replace(".fgb", "_centroid.fgb")
+            create_centroid_geom_file(fgb_path, centroid_file)
+            call_tippecanoe(centroid_file, low_zoom_file, min_zoom=5, max_zoom=10)
+            call_tippecanoe(fgb_path, high_zoom_file, min_zoom=11, max_zoom=14)
+            join_pmtiles(low_zoom_file, high_zoom_file, pmtiles_final_path)
+            # delete intermediate files
+            remove(centroid_file)
+            remove(low_zoom_file)
+            remove(high_zoom_file)
+        else:
+            call_tippecanoe(fgb_path, pmtiles_final_path)
+
+        logger.info(f"Created PMTiles for scenario {sf.id} on {pmtiles_final_path}")
+
+        import_scenario_data_csv(id)
     except Exception as e:
-        print(f"Unexpected error: {e}")
+        logger.error(f"Unexpected error during PMTiles generation: {e}")
         sf.error_message = e
         sf.status = "error"
         sf.save(update_fields=["status", "error_message"])
@@ -206,13 +250,19 @@ class DataImporter:
 
     def stream_csv_chunks(self) -> Iterator[List[Dict]]:
         """Stream CSV in chunks to minimize memory usage"""
-        with open(self.scenario_file.file.path, "r", encoding="utf-8") as f:
+        with open(self.scenario_file.file.path, "r", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f, delimiter=self.delimiter)
             current_chunk = []
 
             for i, row in enumerate(reader, 1):
                 # Process row: extract ID, rest goes to JSON
-                external_id = row.pop("id")  # Assuming 'id' column exists
+                try:
+                    external_id = row.pop("id")
+                    if not external_id:
+                        continue
+                except KeyError:
+                    continue
+
                 self.imported_ids.append(external_id)
 
                 # Convert numeric strings to appropriate types
@@ -315,17 +365,9 @@ def sync_scenario_metrics(scenario):
     )
 
 
-@shared_task(bind=True, max_retries=5, default_retry_delay=2)
-def import_scenario_data_csv(self, scenario_file_id: int):
+def import_scenario_data_csv(scenario_file_id: int):
     ScenarioFile = apps.get_model("datasets", "ScenarioFile")
-    try:
-        importer = DataImporter(scenario_file_id)
-    except ScenarioFile.DoesNotExist as e:
-        # Retry with exponential backoff
-        logger.warning(
-            f"ScenarioFile {id} not found, retrying... (attempt {self.request.retries + 1})"
-        )
-        raise self.retry(exc=e, countdown=2**self.request.retries)
+    importer = DataImporter(scenario_file_id)
 
     stats = importer.import_csv()
     logger.info(
@@ -333,9 +375,27 @@ def import_scenario_data_csv(self, scenario_file_id: int):
     )
 
     # Sync metrics after successful import
+    sf = ScenarioFile.objects.get(id=scenario_file_id)
     try:
-        scenario = ScenarioFile.objects.get(id=scenario_file_id).scenario
-        sync_scenario_metrics(scenario)
-        logger.info(f"Metrics synced successfully for scenario {scenario.id}")
+        sync_scenario_metrics(sf.scenario)
+
+        sf.status = "ready"
+        sf.save(update_fields=["status"])
+        logger.info(f"Metrics synced successfully for scenario {sf.scenario.id}")
     except Exception as e:
         logger.error(f"Failed to sync metrics for scenario: {e}")
+        sf.status = "error"
+        sf.error_message = e
+        sf.save(update_fields=["status", "error_message"])
+        return
+
+    try:
+        invalidate_scenario_summary_cache(sf.scenario.id)
+    except Exception as e:
+        logger.warning(f"Cache invalidation failed for scenario {sf.scenario.id}: {e}")
+
+
+@shared_task
+def delete_item(model_name: str, id: int):
+    M = apps.get_model("datasets", model_name)
+    M.objects.get(id=id).delete()

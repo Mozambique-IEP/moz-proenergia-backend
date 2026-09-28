@@ -11,6 +11,18 @@ urlpatterns = [
         views.VectorDatasetDetailView.as_view(),
         name="vector-detail",
     ),
+    path("raster/", views.RasterDatasetListView.as_view(), name="raster-list"),
+    path(
+        "raster/<int:pk>/",
+        views.RasterDatasetDetailView.as_view(),
+        name="raster-detail",
+    ),
+    path("reference/", views.ReferenceDatasetListView.as_view(), name="reference-list"),
+    path(
+        "reference/<int:pk>/",
+        views.ReferenceDatasetDetailView.as_view(),
+        name="reference-detail",
+    ),
     path("model/", views.DataModelListView.as_view(), name="model-list"),
     path(
         "model/<int:pk>/",
@@ -26,5 +38,10 @@ urlpatterns = [
         "scenario/<int:pk>/summaries/",
         views.MultiFieldSummaryView.as_view(),
         name="scenario-summaries",
+    ),
+    path(
+        "scenario/<int:pk>/summaries/cache/",
+        views.PurgeSummaryCacheView.as_view(),
+        name="scenario-summaries-cache",
     ),
 ]
