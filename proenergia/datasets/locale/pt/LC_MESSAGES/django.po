@@ -603,6 +603,49 @@ msgstr ""
 msgid "Yes, queue deletion"
 msgstr "Sim, agendar para exclusão"
 
+#: proenergia/datasets/admin.py
+#, python-format
+msgid "Summary cache cleared: %(count)d entry removed."
+msgid_plural "Summary cache cleared: %(count)d entries removed."
+msgstr[0] "Cache de resumos limpa: %(count)d entrada removida."
+msgstr[1] "Cache de resumos limpa: %(count)d entradas removidas."
+
+#: proenergia/datasets/admin.py
+msgid "Clear summary cache of selected Data Models"
+msgstr "Limpar a cache de resumos dos Modelos de Dados selecionados"
+
+#: proenergia/datasets/admin.py
+msgid "Clear all summary cache"
+msgstr "Limpar toda a cache de resumos"
+
+#: proenergia/datasets/admin.py
+msgid "Clear summary cache"
+msgstr "Limpar a cache de resumos"
+
+#: proenergia/datasets/admin.py
+msgid "Clear summary cache of selected Scenarios"
+msgstr "Limpar a cache de resumos dos Cenários selecionados"
+
+#: proenergia/datasets/admin.py
+msgid ""
+"The cached summaries of all scenarios will be cleared. They will be "
+"recomputed on the next request."
+msgstr ""
+"A cache de resumos de todos os cenários será limpa. Os resumos serão "
+"recalculados no próximo pedido."
+
+#: proenergia/datasets/admin.py
+msgid ""
+"The cached summaries of the following scenarios will be cleared. They will "
+"be recomputed on the next request."
+msgstr ""
+"A cache de resumos dos seguintes cenários será limpa. Os resumos serão "
+"recalculados no próximo pedido."
+
+#: proenergia/datasets/templates/admin/datasets/clear_summary_cache_confirmation.html
+msgid "Yes, clear cache"
+msgstr "Sim, limpar a cache"
+
 #: proenergia/datasets/templates/admin/datasets/async_delete_confirmation.html:31
 msgid "No, take me back"
 msgstr "Não, voltar"

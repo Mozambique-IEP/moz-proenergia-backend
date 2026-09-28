@@ -4,13 +4,21 @@ from django.contrib import admin, messages
 from django.contrib.admin import helpers
 from django.contrib.admin.decorators import display
 from django.forms import CheckboxSelectMultiple, ModelForm
+from django.http import HttpResponseNotAllowed
+from django.shortcuts import redirect
 from django.template.response import TemplateResponse
+from django.urls import reverse
 from django.utils.translation import gettext as _
 from django.utils.translation import ngettext
 from django_json_widget.widgets import JSONEditorWidget
 from modeltranslation.admin import TabbedTranslationAdmin
 from unfold.admin import ModelAdmin
+from unfold.decorators import action
 
+from proenergia.datasets.cache_utils import (
+    invalidate_all_summary_cache,
+    invalidate_scenarios_summary_cache,
+)
 from proenergia.datasets.tasks import (
     delete_item,
     generate_pmtiles,
@@ -60,6 +68,47 @@ def _async_delete_action(model_admin, request, queryset, model_name):
         request,
         "admin/datasets/async_delete_confirmation.html",
         context,
+    )
+
+
+def _summary_cache_cleared_message(request, deleted_count):
+    messages.success(
+        request,
+        ngettext(
+            "Summary cache cleared: %(count)d entry removed.",
+            "Summary cache cleared: %(count)d entries removed.",
+            deleted_count,
+        )
+        % {"count": deleted_count},
+    )
+
+
+def _clear_summary_cache_view(
+    model_admin, request, message, objects, clear, return_url
+):
+    """
+    Confirm-then-clear view for the Unfold toolbar buttons.
+
+    Unfold renders these buttons as links, so GET only shows a confirmation
+    page; the cache is cleared exclusively on the POST from that page.
+    """
+    if request.method == "POST":
+        _summary_cache_cleared_message(request, clear())
+        return redirect(return_url)
+
+    if request.method != "GET":
+        return HttpResponseNotAllowed(["GET", "POST"])
+
+    context = {
+        **model_admin.admin_site.each_context(request),
+        "title": _("Are you sure?"),
+        "message": message,
+        "objects": objects,
+        "cancel_url": return_url,
+        "opts": model_admin.model._meta,
+    }
+    return TemplateResponse(
+        request, "admin/datasets/clear_summary_cache_confirmation.html", context
     )
 
 
@@ -422,7 +471,75 @@ class DataModelAdmin(ModelAdmin, TabbedTranslationAdmin):
     list_display = ["name", "presentation_order", "is_public"]
     list_editable = ["presentation_order"]
     form = DataModelAdminForm
-    actions = ["async_delete"]
+    actions = ["async_delete", "clear_summary_cache"]
+    actions_list = ["clear_all_summary_cache"]
+    actions_detail = ["clear_summary_cache_detail"]
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        if change:
+            # Field configuration changes affect the summaries of all scenarios
+            invalidate_scenarios_summary_cache(
+                obj.scenarios.values_list("id", flat=True)
+            )
+
+    @admin.action(
+        description=_("Clear summary cache of selected Data Models"),
+        permissions=["change"],
+    )
+    def clear_summary_cache(self, request, queryset):
+        scenario_ids = Scenario.objects.filter(model__in=queryset).values_list(
+            "id", flat=True
+        )
+        _summary_cache_cleared_message(
+            request, invalidate_scenarios_summary_cache(scenario_ids)
+        )
+
+    @action(
+        description=_("Clear all summary cache"),
+        url_path="clear-all-summary-cache",
+        permissions=["change"],
+        icon="cached",
+    )
+    def clear_all_summary_cache(self, request):
+        return _clear_summary_cache_view(
+            self,
+            request,
+            message=_(
+                "The cached summaries of all scenarios will be cleared. "
+                "They will be recomputed on the next request."
+            ),
+            objects=None,
+            clear=invalidate_all_summary_cache,
+            return_url=reverse("admin:datasets_datamodel_changelist"),
+        )
+
+    @action(
+        description=_("Clear summary cache"),
+        url_path="clear-summary-cache",
+        permissions=["change"],
+        icon="cached",
+    )
+    def clear_summary_cache_detail(self, request, object_id):
+        data_model = self.get_object(request, object_id)
+        if data_model is None:
+            return self._get_obj_does_not_exist_redirect(request, self.opts, object_id)
+        scenarios = list(data_model.scenarios.all())
+        return _clear_summary_cache_view(
+            self,
+            request,
+            message=_(
+                "The cached summaries of the following scenarios will be cleared. "
+                "They will be recomputed on the next request."
+            ),
+            objects=scenarios,
+            clear=lambda: invalidate_scenarios_summary_cache(
+                [scenario.id for scenario in scenarios]
+            ),
+            return_url=reverse(
+                "admin:datasets_datamodel_change", args=(data_model.pk,)
+            ),
+        )
 
     @admin.action(description=_("Delete selected Data Models"), permissions=["delete"])
     def async_delete(self, request, queryset):
@@ -461,7 +578,45 @@ class ScenarioAdmin(ModelAdmin, TabbedTranslationAdmin):
     list_editable = ["presentation_order"]
     list_filter = ["model"]
     fields = ["name", "model", "vector_dataset", "presentation_order"]
-    actions = ["async_delete"]
+    actions = ["async_delete", "clear_summary_cache"]
+    actions_detail = ["clear_summary_cache_detail"]
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        if change:
+            invalidate_scenarios_summary_cache([obj.id])
+
+    @admin.action(
+        description=_("Clear summary cache of selected Scenarios"),
+        permissions=["change"],
+    )
+    def clear_summary_cache(self, request, queryset):
+        _summary_cache_cleared_message(
+            request,
+            invalidate_scenarios_summary_cache(queryset.values_list("id", flat=True)),
+        )
+
+    @action(
+        description=_("Clear summary cache"),
+        url_path="clear-summary-cache",
+        permissions=["change"],
+        icon="cached",
+    )
+    def clear_summary_cache_detail(self, request, object_id):
+        scenario = self.get_object(request, object_id)
+        if scenario is None:
+            return self._get_obj_does_not_exist_redirect(request, self.opts, object_id)
+        return _clear_summary_cache_view(
+            self,
+            request,
+            message=_(
+                "The cached summaries of the following scenarios will be cleared. "
+                "They will be recomputed on the next request."
+            ),
+            objects=[scenario],
+            clear=lambda: invalidate_scenarios_summary_cache([scenario.id]),
+            return_url=reverse("admin:datasets_scenario_change", args=(scenario.pk,)),
+        )
 
     @admin.action(description=_("Delete selected Scenarios"), permissions=["delete"])
     def async_delete(self, request, queryset):
