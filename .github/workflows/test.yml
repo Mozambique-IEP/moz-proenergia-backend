@@ -10,29 +10,46 @@ jobs:
       matrix:
         python-version: ["3.13"]
 
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: proenergia
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d proenergia"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
     steps:
-      - uses: actions/checkout@v6
-      - name: Setup PostgreSQL with Postgis
-        uses: nyurik/action-setup-postgis@v2.3
-        with:
-          database: proenergia
-        id: postgres
+      - uses: actions/checkout@v4
+
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install Dependencies
+
+      - name: Install system dependencies
         run: |
           sudo apt-get update -qq -y
           sudo apt-get install -y binutils libproj-dev gdal-bin python3-gdal libgeos-dev libyaml-dev tippecanoe gettext
+
+      - name: Install Python dependencies
+        run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
       - name: Compile Messages
         run: |
           python manage.py compilemessages -f
+
       - name: Run Tests
         run: |
           coverage run manage.py test --settings=proenergia.config.local
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/proenergia
           DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
