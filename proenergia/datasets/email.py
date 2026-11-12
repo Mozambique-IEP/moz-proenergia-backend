@@ -1,10 +1,12 @@
-from typing import List
+import logging
 
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 
+logger = logging.getLogger(__name__)
 
-def send_dataset_approval_email(dataset_name: str, link: str, email_list: List[str]):
+
+def send_dataset_approval_email(dataset_name: str, link: str, email_list: list[str]):
     url = f"{settings.BACKEND_URL}{link}"
     from_email = (
         f"{settings.UNFOLD.get('SITE_TITLE')} <{settings.DEFAULT_FROM_EMAIL}>"
@@ -22,4 +24,9 @@ def send_dataset_approval_email(dataset_name: str, link: str, email_list: List[s
     <p>Access <a href="{url}">{url}</a> to approve it.</p>
     """
     email.attach_alternative(html_content, "text/html")
-    email.send()
+    try:
+        email.send()
+    except Exception as e:
+        logger.debug(
+            f"Failed to send approval request email for dataset {dataset_name}: {e}"
+        )
